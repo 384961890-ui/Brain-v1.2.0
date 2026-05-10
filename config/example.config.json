@@ -1,0 +1,35 @@
+{
+  "workspace": ".",
+  "memory": {
+    "type": "lancedb",
+    "lancedb": {
+      "storePath": "./data/brain-memories",
+      "embeddingDimension": 1024,
+      "embeddingProvider": "openai",
+      "embeddingModel": "BAAI/bge-m3",
+      "embeddingBaseUrl": "https://api.siliconflow.cn",
+      "embeddingApiKey": "$ENV:YOUR_EMBEDDING_API_KEY"
+    }
+  },
+  "limits": {
+    "fragment_max_tokens": 2000,
+    "injection_max_tokens": 10000,
+    "conversation_review_threshold": 20,
+    "days_low_frequency": 7,
+    "days_abandoned": 30,
+    "low_confidence_threshold": 0.6,
+    "max_retries": 3,
+    "default_timeout_ms": 1200000
+  },
+  "models": {
+    "default": "deepseek/deepseek-v4-flash",
+    "simple": "deepseek/deepseek-v4-flash",
+    "medium": "deepseek/deepseek-v4-pro",
+    "code": "deepseek/deepseek-v4-pro",
+    "search": "deepseek/deepseek-v4-flash",
+    "write": "deepseek/deepseek-v4-pro",
+    "reason": "deepseek/deepseek-v4-pro",
+    "image": "gpt-agent/mimo-v2.5"
+  },
+  "skills_dirs": []
+}

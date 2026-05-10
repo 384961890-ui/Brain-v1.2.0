@@ -1,0 +1,18 @@
+{
+  "1": {
+    "id": 1,
+    "topic": "persistence_test_1777551103419",
+    "content": "Test persistence: {\"timestamp\":\"2026-04-30T12:11:43.419Z\",\"random\":0.09787553033583096}",
+    "source": "test-persistence",
+    "session_key": null,
+    "created_at": "2026-04-30 12:11:43"
+  },
+  "2": {
+    "id": 2,
+    "topic": "AI GEO 任务进度_2026-04-30",
+    "content": "{\"task\":\"AI GEO 客户拓展\",\"completed\":[\"需求分析\",\"设计方案\"],\"inProgress\":[\"前端开发\"],\"pending\":[\"测试\",\"上线\"],\"blocker\":\"无\"}",
+    "source": "paoumi-progress",
+    "session_key": null,
+    "created_at": "2026-04-30 12:12:08"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "slug": "brain",
+  "version": "1.1.9",
+  "tag": "full",
+  "publishedAt": 1746182400000,
+  "tags": ["memory", "architecture", "brain", "v1.1.9", "full-edition", "mcp", "dual-mode", "qmd", "semantic-search", "session-store"],
+  "description": "brain v1.1.9 双形态完整版：Skill认知核心 + MCP开箱即用。6层架构保留，新增9个MCP工具、MemoryBackend统一接口、SessionStore会话持久化、配置中心化、安全加固。免费版证明能力，完整版交付可靠。",
+  "author": "Pawmi",
+  "license": "MIT",
+  "features": [
+    "Skill + MCP 双形态架构（认知层 + 接入层）",
+    "9个MCP工具（recall/list/forget/inject/save_decision/get_latest_snapshot/confidence_check/task_status/cleanup）",
+    "MemoryBackend 统一记忆接口（后端可插拔）",
+    "SessionStore 会话持久化（JSON存储）",
+    "6层认知架构（感知→认知→记忆→执行→输出→胶囊）",
+    "10K token硬上限+自动压缩",
+    "记忆Fragment标准接口（5种类型统一）",
+    "30+自动化测试用例",
+    "7个自动化脚本",
+    "QMD语义记忆搜索（953 chunks）",
+    "置信度评估（信号表+对抗验证）",
+    "配置中心化（brain.config.json + 31项配置）",
+    "安全加固（原子写入/错误恢复/输入校验）",
+    "胶囊成熟度自动维护（raw/tested/stable三级）",
+    "subagent派遣6-Section思考链"
+  ],
+  "upgradeFrom": "1.1.8",
+  "changelog": "CHANGELOG.md"
+}

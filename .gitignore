@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Config (contains user-specific paths and API keys — copy config.example.json and customize)
+config/brain.config.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime data
+*.backup-*/
