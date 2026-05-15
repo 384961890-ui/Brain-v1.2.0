@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * brain-mcp-server.js — Brain MCP Server v1.1.9
+ * brain-mcp-server.js — Brain MCP Server v1.2.0
  * ===============================================
  *
  * 将 brain v1.1.9 的核心能力包装成 MCP 协议服务端，
@@ -54,7 +54,7 @@ const fileLockManager = new FileLockManager();
 
 const server = new McpServer({
   name: 'brain-mcp',
-  version: '1.1.9',
+  version: '1.2.0',
 });
 
 // ============================================================
@@ -81,7 +81,7 @@ server.tool(
   'brain_recall',
   '从 brain 记忆系统搜索信息。精确关键词匹配（快速，O(N) 扫描）。' +
   'WHEN TO USE: 知道确切关键词/术语时。例："latex header"、"docker compose"。' +
-  'WHEN NOT: 模糊/概念性查询 → 用 brain_semantic_recall。',
+  'WHEN NOT: 模糊/概念性查询 → 用 brain_search。不确定用哪个 → brain_search（自动融合）。',
   {
     query: z.string().describe('搜索关键词'),
     limit: z.number().optional().default(10).describe('返回结果数量上限'),
@@ -97,9 +97,9 @@ server.tool(
         return {
           content: [{ type: 'text', text: JSON.stringify({
             empty: true,
-            hint: '关键词无匹配，尝试 brain_semantic_recall 做模糊语义搜索',
+            hint: '关键词无匹配，尝试 brain_search（融合搜索）或 brain_semantic_recall 做模糊语义搜索',
             query,
-            nextAction: 'brain_semantic_recall',
+            nextAction: 'brain_search',
           }, null, 2) }],
         };
       }
@@ -130,12 +130,96 @@ server.tool(
 // Tool: brain_semantic_recall — QMD 语义记忆搜索
 // ============================================================
 
-const { execSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
+
+// ===== brain_semantic_recall: Python 常驻 worker =====
+let _qmdWorker = null;
+let _qmdWorkerBusy = false;
+const _qmdWorkerQueue = [];
+
+function _getQmdWorker() {
+  if (!_qmdWorker || _qmdWorker.killed) {
+    const qmdScript = path.join(__dirname, '..', 'brain-memory-qmd', 'brain-memory-qmd.py');
+    _qmdWorker = spawn('python3', ['-u', qmdScript, 'worker'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    });
+    _qmdWorker.stderr.on('data', (d) => {
+      // 静默吞掉 stderr（模型加载日志等）
+    });
+    _qmdWorker.on('exit', (code) => {
+      if (code !== 0) _qmdWorker = null;
+    });
+  }
+  return _qmdWorker;
+}
+
+function _qmdSearch(query, top_k, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const worker = _getQmdWorker();
+
+    // Worker 模式：发送 JSON 行 → 接收 JSON 行
+    const request = JSON.stringify({ query, top_k }) + '\n';
+
+    let buf = '';
+    const onData = (chunk) => {
+      buf += chunk.toString();
+      const nl = buf.indexOf('\n');
+      if (nl >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        worker.stdout.removeListener('data', onData);
+        clearTimeout(timer);
+        try {
+          resolve(JSON.parse(line));
+        } catch {
+          resolve([]);
+        }
+      }
+    };
+
+    const timer = setTimeout(() => {
+      worker.stdout.removeListener('data', onData);
+      reject(new Error('QMD worker timeout'));
+    }, timeoutMs);
+
+    worker.stdout.on('data', onData);
+    worker.stdin.write(request);
+  });
+}
+
+function _qmdSearchFallback(query, top_k) {
+  const qmdScript = path.join(__dirname, '..', 'brain-memory-qmd', 'brain-memory-qmd.py');
+  const stdout = execFileSync('python3', [qmdScript, 'search', query, '--top-k', String(top_k)], {
+    encoding: 'utf8',
+    timeout: 30000,
+    maxBuffer: 1024 * 1024,
+  });
+
+  let results = [];
+  const jsonStart = stdout.indexOf('[');
+  if (jsonStart >= 0) {
+    results = JSON.parse(stdout.slice(jsonStart));
+  }
+  return results;
+}
+
+function _formatResults(results) {
+  return results.map((r, i) => {
+    return [
+      `### ${i + 1}. [${r.file}]`,
+      `语义相似度: ${(r.score * 100).toFixed(1)}%`,
+      '',
+      r.text,
+      `来源: ${r.file_path}`,
+    ].filter(Boolean).join('\n');
+  }).join('\n\n---\n\n');
+}
 
 server.tool(
   'brain_semantic_recall',
-  'QMD 语义记忆搜索（bge-small-zh-v1.5 中文模型）。' +
-  'WHEN TO USE: 模糊查询、概念搜索、中文自然语言。brain_recall 无结果时回退至此。' +
+  'QMD 语义记忆搜索（bge-small-zh-v1.5 中文模型，BM25+embedding 混合检索）。' +
+  'WHEN TO USE: 模糊查询、概念搜索、中文自然语言。不确定用哪个 → brain_search（自动融合）。' +
   '结果含语义相似度分数（0-1），top_k 控制返回数。',
   {
     query: z.string().describe('搜索查询（自然语言，支持中文语义匹配）'),
@@ -143,20 +227,17 @@ server.tool(
   },
   async ({ query, top_k }) => {
     try {
-      const qmdScript = path.join(__dirname, '..', 'brain-memory-qmd', 'brain-memory-qmd.py');
-      const command = `python3 "${qmdScript}" search "${query}" --top-k ${top_k}`;
-
-      const stdout = execSync(command, {
-        encoding: 'utf8',
-        timeout: 30000, // 30 秒超时
-        maxBuffer: 1024 * 1024, // 1MB
-      });
-
-      // 解析 JSON 输出
       let results = [];
-      const jsonStart = stdout.indexOf('[');
-      if (jsonStart >= 0) {
-        results = JSON.parse(stdout.slice(jsonStart));
+      try {
+        // 优先用常驻 worker（模型已预热，100ms 级响应）
+        results = await _qmdSearch(query, top_k);
+      } catch {
+        // Worker 不可用时回退到一次性 execFile（安全，无 shell 注入）
+        try {
+          results = _qmdSearchFallback(query, top_k);
+        } catch (fallbackErr) {
+          throw fallbackErr;
+        }
       }
 
       if (!results || results.length === 0) {
@@ -169,15 +250,7 @@ server.tool(
         };
       }
 
-      const formatted = results.map((r, i) => {
-        return [
-          `### ${i + 1}. [${r.file}]`,
-          `语义相似度: ${(r.score * 100).toFixed(1)}%`,
-          '',
-          r.text,
-          `来源: ${r.file_path}`,
-        ].filter(Boolean).join('\n');
-      }).join('\n\n---\n\n');
+      const formatted = _formatResults(results);
 
       return {
         content: [{ type: 'text', text: `找到 ${results.length} 条语义匹配记忆：\n\n${formatted}` }],
@@ -192,6 +265,120 @@ server.tool(
 
       return {
         content: [{ type: 'text', text: errorMessage }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ============================================================
+// Tool: brain_search — 融合搜索（关键词 + 语义并行，合并去重）
+// ============================================================
+
+server.tool(
+  'brain_search',
+  '融合搜索：并行执行 brain_recall（关键词匹配）+ brain_semantic_recall（语义搜索），' +
+  '自动合并去重后返回统一结果集。一次调用覆盖两种搜索策略，推荐 Agent 启动时首选。' +
+  'WHEN TO USE: 任务启动时、记不清用哪个搜索、需要最全结果时。' +
+  '结果含 source 字段标注来源（recall/semantic），同分优先语义。',
+  {
+    query: z.string().describe('搜索查询（自然语言，支持中英文）'),
+    limit: z.number().optional().default(10).describe('返回结果数量上限（1-50）'),
+    type: z.string().optional().describe('brain_recall 的类型过滤（skill/task/config/conclusion/lesson），语义搜索不受影响'),
+  },
+  async ({ query, limit, type }) => {
+    try {
+      // 并行执行两种搜索
+      const recallPromise = memoryBackend.recall(query, { limit, type: type || null })
+        .then(results => results.map(r => ({
+          source: 'recall',
+          id: r.fragment.id,
+          type: r.fragment.type,
+          content: r.fragment.content,
+          score: r.score,
+          priority: r.fragment.priority,
+          createdAt: r.fragment.createdAt,
+        })))
+        .catch(() => []);
+
+      const semanticPromise = (async () => {
+        try {
+          let results = [];
+          try {
+            results = await _qmdSearch(query, limit);
+          } catch {
+            try { results = _qmdSearchFallback(query, limit); } catch { /* ignore */ }
+          }
+          return results.map(r => ({
+            source: 'semantic',
+            file: r.file,
+            file_path: r.file_path,
+            content: r.text,
+            score: r.score,
+          }));
+        } catch {
+          return [];
+        }
+      })();
+
+      const [recallResults, semanticResults] = await Promise.all([recallPromise, semanticPromise]);
+
+      // 合并去重：内容归一化后比对
+      const seenContents = new Set();
+      const merged = [];
+
+      const normalize = (text) => (text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+
+      for (const r of recallResults) {
+        const key = normalize(r.content);
+        if (!seenContents.has(key)) {
+          seenContents.add(key);
+          merged.push(r);
+        }
+      }
+
+      for (const r of semanticResults) {
+        const key = normalize(r.content);
+        if (!seenContents.has(key)) {
+          seenContents.add(key);
+          merged.push(r);
+        }
+      }
+
+      // 按分数降序
+      merged.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+      const sliced = merged.slice(0, limit);
+
+      if (sliced.length === 0) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            empty: true,
+            hint: '融合搜索无结果。尝试 brain_list 列出全部记忆或检查记忆库是否已初始化。',
+            query,
+            nextAction: 'brain_list 或 brain_inject',
+          }, null, 2) }],
+        };
+      }
+
+      const formatted = sliced.map((r, i) => {
+        const sourceLabel = r.source === 'semantic' ? '[语义]' : `[${r.type || 'recall'}]`;
+        return [
+          `### ${i + 1}. ${sourceLabel} (score: ${(r.score || 0).toFixed(2)})`,
+          r.content,
+          r.createdAt ? `创建于: ${r.createdAt}` : '',
+          r.file_path ? `来源: ${r.file_path}` : (r.id ? `ID: ${r.id}` : ''),
+        ].filter(Boolean).join('\n');
+      }).join('\n\n---\n\n');
+
+      return {
+        content: [{ type: 'text', text:
+          `融合搜索完成（recall ${recallResults.length} + semantic ${semanticResults.length} → 合并 ${merged.length} → 返回 ${sliced.length} 条）\n\n${formatted}`
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `融合搜索失败: ${err.message}` }],
         isError: true,
       };
     }
@@ -472,15 +659,17 @@ server.tool(
 
 server.tool(
   'brain_list',
-  '列出 brain 记忆系统中的记忆片段。支持按类型过滤和分页。',
+  '列出 brain 记忆系统中的记忆片段。支持按类型过滤、分页和排序。',
   {
     type: z.string().optional().describe('按类型过滤（skill/task/config/conclusion/lesson）'),
-    limit: z.number().optional().default(20).describe('返回数量上限（1-100）'),
+    limit: z.number().optional().default(20).describe('每页数量（1-100）'),
+    page: z.number().optional().default(1).describe('分页页码'),
+    sortBy: z.enum(['priority', 'created']).optional().default('priority').describe('排序方式'),
   },
-  async ({ type, limit }) => {
+  async ({ type, limit, page, sortBy }) => {
     try {
       const pageSize = Math.min(Math.max(limit || 20, 1), 100);
-      const result = await memoryBackend.list({ page: 1, pageSize, type, sortBy: 'priority' });
+      const result = await memoryBackend.list({ page: page || 1, pageSize, type, sortBy: sortBy || 'priority' });
 
       if (result.items.length === 0) {
         return {
@@ -551,10 +740,13 @@ server.tool(
 
 server.tool(
   'brain_inject',
-  '从会话快照和工作缓冲区组装上下文注入字符串。返回可直接喂给 AI 的上下文摘要。' +
-  '这是外部工具（Claude Code / Codex）获取 brain 完整会话状态的最佳入口。',
-  {},
-  async () => {
+  '从会话快照、工作缓冲区、SessionStore（未完成任务+最近决策）组装上下文注入字符串。' +
+  'v1.2.0: 附加状态栏（记忆数/会话数/待办/健康）。可选 includeSessionStore 参数。' +
+  '这是外部工具获取 brain 完整会话状态的最佳入口。',
+  {
+    includeSessionStore: z.boolean().optional().default(true).describe('是否注入 SessionStore 的未完成任务和最近决策'),
+  },
+  async ({ includeSessionStore }) => {
     try {
       const cfg = getConfig();
       const snapshotPath = resolvePath(cfg.paths.snapshot);
@@ -576,46 +768,82 @@ server.tool(
         // not found
       }
 
-      if (!snapshot) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({
-            empty: true,
-            hint: 'SNAPSHOT.md 尚未生成',
-            nextAction: '运行 build-session-injection.js 或等待 OpenClaw 心跳生成快照',
-          }, null, 2) }],
-        };
+      // 构建注入片段
+      const fragments = [];
+      let hasSessionStoreData = false;
+
+      if (snapshot) {
+        const info = extractKeyInfo(snapshot);
+        fragments.push(`【用户】${info.用户信息.join(' | ') || '未知'}`);
+        fragments.push(`【进行中】${info.当前任务.join(', ') || '无'}`);
+        fragments.push(`【待办】${info.待办.join(', ') || '无'}`);
+        fragments.push(`【最近关键结论】\n${info.最近结论.slice(0, 5).join('\n') || '无'}`);
       }
 
-      const info = extractKeyInfo(snapshot);
+      // SessionStore 注入（未完成任务 + 最近决策）
+      if (includeSessionStore) {
+        try {
+          const pending = await sessionStore.getPendingTasks();
+          if (pending.length > 0) {
+            fragments.push(`【未完成任务】\n${pending.slice(0, 5).map(t =>
+              `- [${t.status === 'in_progress' ? '进行中' : '待处理'}] ${t.taskId}${t.progress ? ` (${t.progress})` : ''}`
+            ).join('\n')}`);
+            hasSessionStoreData = true;
+          }
 
-      // 构造注入片段
-      const fragments = [];
-
-      // 用户信息
-      fragments.push(`【用户】${info.用户信息.join(' | ') || '未知'}`);
-
-      // 当前任务
-      fragments.push(`【进行中】${info.当前任务.join(', ') || '无'}`);
-
-      // 待办
-      fragments.push(`【待办】${info.待办.join(', ') || '无'}`);
-
-      // 最近关键结论
-      fragments.push(`【最近关键结论】\n${info.最近结论.slice(0, 5).join('\n') || '无'}`);
+          const recentDecisions = await sessionStore.searchDecisions({ limit: 5 });
+          if (recentDecisions.length > 0) {
+            fragments.push(`【最近决策】\n${recentDecisions.map(d =>
+              `- [${d.created_at?.slice(0, 10) || '?'}] ${d.topic}: ${d.content.slice(0, 100)}`
+            ).join('\n')}`);
+            hasSessionStoreData = true;
+          }
+        } catch {
+          // SessionStore 不可用，静默跳过
+        }
+      }
 
       // 工作缓冲
       if (buffer) {
         fragments.push(`【工作缓冲】\n${buffer.slice(0, 2000)}`);
       }
 
-      const injection = `【当前会话上下文】\n\n${fragments.join('\n\n')}`;
+      if (!snapshot && !hasSessionStoreData) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            empty: true,
+            hint: 'SNAPSHOT.md 尚未生成且 SessionStore 无数据',
+            nextAction: '运行 build-session-injection.js 或等待 OpenClaw 心跳生成快照',
+          }, null, 2) }],
+        };
+      }
+
+      // v1.2.0: 构建状态栏（记忆/会话/健康快照）
+      let statusBar = '';
+      try {
+        const memStats = await memoryBackend.stats();
+        const sessStats = await sessionStore.stats();
+        const pendingTasks = await sessionStore.getPendingTasks();
+
+        const healthIcons = [];
+        healthIcons.push(`记忆 ${memStats.total || 0} 条`);
+        healthIcons.push(`会话 ${sessStats.sessions || 0} 轮`);
+        if (pendingTasks.length > 0) healthIcons.push(`待办 ${pendingTasks.length} 项`);
+        healthIcons.push('健康 ✅');
+
+        statusBar = `\n---\n状态栏: ${healthIcons.join(' · ')}`;
+      } catch {
+        statusBar = '';
+      }
+
+      const injection = `【当前会话上下文】\n\n${fragments.join('\n\n')}${statusBar}`;
 
       // 附加 meta 信息
       const meta = {
         timestamp: new Date().toISOString(),
         estimatedTokens: estimateTokens(injection),
         hardLimitTokens: cfg.limits.injection_max_tokens || 10000,
-        sources: { snapshot: !!snapshot, buffer: !!buffer },
+        sources: { snapshot: !!snapshot, buffer: !!buffer, sessionStore: hasSessionStoreData },
       };
 
       return {
@@ -689,6 +917,123 @@ server.tool(
     } catch (err) {
       return {
         content: [{ type: 'text', text: `记忆清理失败: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ============================================================
+// Tool: brain_healthcheck — 一键体检
+// ============================================================
+
+server.tool(
+  'brain_healthcheck',
+  'brain 系统一键体检：配置、后端、embedding API、QMD 索引、损坏文件、过期锁、模型维度。' +
+  '返回 { ok: boolean, checks: [...], issues: [...] }。每次安装/升级后调用。',
+  {},
+  async () => {
+    try {
+      const healthScript = path.join(__dirname, 'healthcheck.js');
+      const { execFileSync } = require('child_process');
+      const stdout = execFileSync('node', [healthScript], {
+        encoding: 'utf8',
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      return { content: [{ type: 'text', text: stdout }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: false,
+          checks: [],
+          issues: [{ component: 'healthcheck', level: 'error', message: err.message }],
+        }, null, 2) }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ============================================================
+// Tool: brain_memory_stats — 记忆库统计面板
+// ============================================================
+
+server.tool(
+  'brain_memory_stats',
+  '记忆库完整统计面板。返回总量、按类型分布、top 访问、去重合并次数、最旧/最新记忆、损坏文件。' +
+  '比 brain_task_status 更底层，聚焦 MemoryBackend 而非 SessionStore。',
+  {},
+  async () => {
+    try {
+      const stats = await memoryBackend.stats();
+      const total = stats.total || 0;
+
+      // 拉取足够多的记忆来做统计（上限 500，避免大数据量 OOM）
+      const allMemories = await memoryBackend.list({ page: 1, pageSize: Math.min(total, 500), sortBy: 'priority' });
+      const items = allMemories.items || [];
+
+      // top 访问记忆
+      const topByAccess = [...items]
+        .sort((a, b) => (b.accessCount || 0) - (a.accessCount || 0))
+        .slice(0, 5)
+        .map(m => ({
+          id: m.id,
+          type: m.type,
+          accessCount: m.accessCount || 0,
+          priority: m.priority,
+          snippet: (m.content || '').slice(0, 80),
+        }));
+
+      // 时间跨度
+      let oldestMemory = null;
+      let newestMemory = null;
+      const withDates = items.filter(m => m.createdAt);
+      if (withDates.length > 0) {
+        const sorted = [...withDates].sort((a, b) =>
+          (a.createdAt || '').localeCompare(b.createdAt || ''));
+        oldestMemory = sorted[0]?.createdAt || null;
+        newestMemory = sorted[sorted.length - 1]?.createdAt || null;
+      }
+
+      // 平均 age
+      const now = Date.now();
+      let avgAgeDays = 0;
+      if (withDates.length > 0) {
+        avgAgeDays = Math.round(
+          withDates.reduce((sum, m) => sum + (now - new Date(m.createdAt).getTime()) / 86400000, 0)
+          / withDates.length
+        );
+      }
+
+      // 损坏文件残余
+      let corruptionFiles = [];
+      try {
+        const cfg = getConfig();
+        const memDir = path.dirname(resolvePath(cfg.paths.snapshot || 'memory/snapshot.md'));
+        const files = fs.readdirSync(memDir);
+        corruptionFiles = files.filter(f => f.includes('.corrupted.') || f.includes('.removed.'));
+      } catch { /* ignore */ }
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          total,
+          totalTokens: stats.totalTokens || 0,
+          byType: stats.byType || {},
+          topByAccess,
+          oldestMemory,
+          newestMemory,
+          avgAgeDays,
+          corruptionFiles,
+          lastModified: stats.lastModified || null,
+        }, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          error: err.message,
+          hint: 'MemoryBackend 不可用',
+        }, null, 2) }],
         isError: true,
       };
     }

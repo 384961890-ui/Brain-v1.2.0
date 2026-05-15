@@ -99,12 +99,13 @@ class MemoryFragment {
     this.lastAccessedAt = new Date().toISOString();
   }
 
-  /** v1.1.9: 时间衰减分数 [0,1]，30 天半衰 */
+  /** v1.1.9: 时间衰减分数 [0,1]，30 天半衰，热度乘入防越界 */
   decayScore() {
     if (!this.createdAt) return 0;
     const ageDays = (Date.now() - new Date(this.createdAt).getTime()) / (86400 * 1000);
-    const accessBonus = Math.min((this.accessCount || 0) * 0.02, 0.3);
-    return Math.max(0.05, Math.exp(-ageDays / 30)) + accessBonus;
+    const freshness = Math.max(0.05, Math.exp(-ageDays / 30));
+    const popularityBoost = 1 + Math.min((this.accessCount || 0) * 0.02, 0.3);
+    return Math.min(1.0, freshness * popularityBoost);
   }
 
   toContext() {

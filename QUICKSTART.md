@@ -1,6 +1,6 @@
-# brain v1.1.9 快速上手指南
+# brain v1.2.0 快速上手指南
 
-> 5 分钟跑起来，不用读完 762 行 SKILL.md。
+> 5 分钟跑起来，不用读完 SKILL.md。
 
 ---
 
@@ -10,8 +10,9 @@ brain 是一个类大脑 Agent 架构，给你的 AI 助手加上：
 - 🧠 **长期记忆** — 跨会话记住事情
 - 🎯 **置信度评估** — 任务执行前自动判断风险
 - 📦 **胶囊系统** — 成功经验自动封装复用
-- 🔍 **语义搜索** — 用自然语言搜记忆（sentence-transformers）
+- 🔍 **融合搜索** — 关键词+语义双路并行，自动合并去重
 - 📊 **会话追踪** — 决策记录、任务状态全留存
+- 🩺 **健康检查** — 一键体检记忆库全貌
 
 两种形态：
 - **Skill 形态** — OpenClaw Agent 内置认知核心
@@ -23,7 +24,7 @@ brain 是一个类大脑 Agent 架构，给你的 AI 助手加上：
 
 ```bash
 # 进入 brain 目录
-cd ~/.openclaw/skills/brain-v1.1.9
+cd ~/.openclaw/skills/brain-v1.2.0
 
 # 安装依赖
 npm install
@@ -43,7 +44,7 @@ node -c scripts/brain-mcp-server.js && echo "✅ 安装成功"
   "mcpServers": {
     "brain": {
       "command": "node",
-      "args": ["~/.openclaw/skills/brain-v1.1.9/scripts/brain-mcp-server.js"]
+      "args": ["~/.openclaw/skills/brain-v1.2.0/scripts/brain-mcp-server.js"]
     }
   }
 }
@@ -52,7 +53,7 @@ node -c scripts/brain-mcp-server.js && echo "✅ 安装成功"
 **Claude Code (CLI)：**
 
 ```bash
-claude mcp add brain -- node ~/.openclaw/skills/brain-v1.1.9/scripts/brain-mcp-server.js
+claude mcp add brain -- node ~/.openclaw/skills/brain-v1.2.0/scripts/brain-mcp-server.js
 ```
 
 **验证连接：**
@@ -61,25 +62,39 @@ claude mcp add brain -- node ~/.openclaw/skills/brain-v1.1.9/scripts/brain-mcp-s
 bash run-mcp.sh  # 启动后 Ctrl+C 退出即可
 ```
 
-连接成功后你将获得 **9 个工具**：
+连接成功后你将获得 **18 个工具**：
 
 | 工具 | 用途 |
 |:---|:---|
+| `brain_search` | ★融合搜索（关键词+语义并行合并） |
 | `brain_recall` | 关键词记忆搜索 |
-| `brain_semantic_recall` | **语义搜索（sentence-transformers）** |
-| `brain_list` | 浏览全部记忆 |
+| `brain_semantic_recall` | 语义搜索（bge-small-zh-v1.5） |
+| `brain_list` | 浏览全部记忆（分页） |
 | `brain_forget` | 删除指定记忆 |
-| `brain_inject` | 跨会话上下文注入 |
+| `brain_inject` | 跨会话上下文注入（含状态栏） |
 | `brain_save_decision` | 记录决策 |
 | `brain_confidence_check` | 置信度评估 |
 | `brain_task_status` | 查询任务状态 |
 | `brain_cleanup` | 清理过期数据 |
+| `brain_healthcheck` | 一键体检（7项检查） |
+| `brain_memory_stats` | 记忆库完整统计面板 |
+| `brain_get_latest_snapshot` | 最新会话快照 |
+| `brain_lock_acquire` | 获取文件写锁 |
+| `brain_lock_release` | 释放文件写锁 |
+| `brain_lock_status` | 查询锁状态 |
+| `brain_lock_list` | 列出所有锁 |
+| `brain_lock_force_release` | 强制释放锁 |
+
+**推荐启动序列：**
+```
+brain_inject → brain_search → 根据结果决定下一步
+```
 
 ---
 
 ## 形态 B：Skill 认知形态（给 OpenClaw Agent 用）
 
-brain 已作为 OpenClaw Skill 安装在 `~/.openclaw/skills/brain-v1.1.9/`。
+brain 已作为 OpenClaw Skill 安装在 `~/.openclaw/skills/brain-v1.2.0/`。
 
 OpenClaw 会自动加载 SKILL.md 中的认知规则。启动时：
 1. 自动读取 SNAPSHOT.md + 工作缓冲区
@@ -118,7 +133,10 @@ A：先建索引：`python3 brain-memory-qmd/brain-memory-qmd.py index --dir ~/.
 **Q：怎么查看记忆？**
 A：MCP 里调 `brain_list`，或直接看 `~/.openclaw/workspace/memory/memory-store.json`
 
+**Q：记忆库出问题了怎么办？**
+A：跑 `brain_healthcheck` 看诊断结果，再根据提示修复。
+
 ---
 
-*完整文档：SKILL.md（762行）*
+*完整文档：SKILL.md*
 *问题反馈：wangtianrui1999521@gmail.com*

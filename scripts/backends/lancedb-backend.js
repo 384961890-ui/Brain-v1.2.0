@@ -560,14 +560,22 @@ class LanceDBBackend {
     cutoff.setDate(cutoff.getDate() - daysAbandoned);
     const cutoffStr = cutoff.toISOString();
 
+    const beforeCount = await table.countRows();
     try {
       await table.delete(`createdAt < '${cutoffStr}'`);
-    } catch { /* ignore */ }
+    } catch (err) {
+      return {
+        removed: 0,
+        kept: beforeCount,
+        cutoff: cutoffStr,
+        error: err.message,
+      };
+    }
 
-    const stats = await this.stats();
+    const afterCount = await table.countRows();
     return {
-      removed: 0,
-      kept: stats.total,
+      removed: beforeCount - afterCount,
+      kept: afterCount,
       cutoff: cutoffStr,
     };
   }

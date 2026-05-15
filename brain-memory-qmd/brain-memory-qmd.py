@@ -92,24 +92,51 @@ def index_memory(memory_dir: Path = None, force: bool = False) -> dict:
 
 
 def search_memory(query: str, top_k: int = 5) -> list[dict]:
-    """语义搜索记忆"""
-    chunks = load_chunks()
-    embeddings = load_embeddings(INDEX_DIR)
+    """混合搜索记忆（BM25 + embedding RRF 融合）"""
+    from qmd.hybrid import hybrid_search
 
-    if not chunks or embeddings is None:
+    chunks = load_chunks()
+    if not chunks:
         return []
 
-    results = embedding_search(chunks, query, embeddings, top_k=top_k)
+    results = hybrid_search(chunks, query, INDEX_DIR, top_k=top_k)
 
     return [
         {
-            "text": chunks[idx].text,
-            "file": chunks[idx].file_name,
-            "file_path": chunks[idx].file_path,
-            "score": float(score)
+            "text": r.chunk.text,
+            "file": r.chunk.file_name,
+            "file_path": r.chunk.file_path,
+            "score": float(r.score),
         }
-        for idx, score in results
+        for r in results
     ]
+
+
+def cmd_worker(args):
+    """常驻 worker 模式：stdin 读 JSON 行，stdout 返回搜索结果 JSON 行。
+    模型只载入一次，避免每次搜索都冷启动 Python + 载入模型（2-4s → <100ms）。"""
+    import sys
+
+    # 预热：载入 chunks 和 embeddings
+    chunks = load_chunks()
+    embeddings = load_embeddings(INDEX_DIR)
+    sys.stderr.write(f"[qmd-worker] ready ({len(chunks)} chunks)\n")
+    sys.stderr.flush()
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+            query = req.get("query", "")
+            top_k = req.get("top_k", 5)
+            results = search_memory(query, top_k=top_k)
+            print(json.dumps(results, ensure_ascii=False))
+            sys.stdout.flush()
+        except Exception as e:
+            print(json.dumps({"error": str(e)}))
+            sys.stdout.flush()
 
 
 def cmd_index(args):
@@ -154,6 +181,9 @@ def main():
     # status 命令
     p_status = subparsers.add_parser("status", help="查看索引状态")
 
+    # worker 命令（常驻进程，供 Node MCP 端 spawn 使用）
+    p_worker = subparsers.add_parser("worker", help="常驻 worker 模式（stdin JSON → stdout JSON）")
+
     args = parser.parse_args()
 
     if args.cmd == "index":
@@ -162,6 +192,8 @@ def main():
         cmd_search(args)
     elif args.cmd == "status":
         cmd_status(args)
+    elif args.cmd == "worker":
+        cmd_worker(args)
     else:
         parser.print_help()
 

@@ -178,15 +178,16 @@ class FileBackend {
       // 优先级加权
       score *= (0.5 + data.priority * 0.5);
 
-      // v1.1.9: 时间衰减加权
+      // v1.1.9: 时间衰减加权（衰减 × 热度，钳制到 [0.1, 1.0] 防止越界）
       let decay = 1.0;
       if (data.createdAt) {
         const ageDays = (Date.now() - new Date(data.createdAt).getTime()) / (86400 * 1000);
         decay = Math.max(0.1, Math.exp(-ageDays / 30));
       }
-      // 访问次数加成
-      const accessBonus = Math.min((data.accessCount || 0) * 0.02, 0.3);
-      score *= (decay + accessBonus);
+      // 访问次数加成（乘入而非相加，杜绝 1.3x 溢出）
+      const popularityBoost = 1 + Math.min((data.accessCount || 0) * 0.02, 0.3);
+      const timeWeight = Math.min(1.0, decay * popularityBoost);
+      score *= timeWeight;
 
       if (score >= minScore && score > 0) {
         // v1.1.9: 异步记录访问，不阻塞搜索

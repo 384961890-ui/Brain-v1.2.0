@@ -2,7 +2,56 @@
 
 ---
 
-## v1.1.7（2026-04-23）— 接线版 + 死循环修复
+## v1.2.0（2026-05-13）— 融合搜索版
+
+> **核心主题：融合搜索 + 注入增强 + 健康检查 + 持久化 Worker + 修复**
+
+v1.2.0 在 v1.1.9 审计优化版基础上，新增 3 个工具，修复 8 个问题，强化 Agent 端体验。
+
+---
+
+### 🟣 新增功能
+
+| # | 功能 | 说明 |
+|---|------|------|
+| 1 | **brain_search 融合搜索** | 新增 MCP 工具，并行执行 brain_recall + brain_semantic_recall，内容归一化去重后按分数合并返回。Agent 一次调用覆盖两种搜索策略 |
+| 2 | **brain_inject 状态栏** | 注入末尾追加 `状态栏: 记忆 N 条 · 会话 M 轮 · 待办 K 项 · 健康 ✅`，Agent 一眼了解记忆库全貌 |
+| 3 | **SKILL.md 欢迎卡片** | Agent 配置 brain 后首次读取 SKILL.md 自动展示工具速查表 + 推荐启动序列 |
+| 4 | **brain_healthcheck** | 一键体检 MCP 工具，7 项检查：config/backend/embedding/QMD索引/损坏文件/过期锁/模型维度 |
+| 5 | **brain_memory_stats** | 记忆库统计面板：总量/类型分布/top访问/最旧最新记忆/平均年龄/损坏文件 |
+
+### 🔧 修复
+
+| # | 问题 | 修复 | 优先级 |
+|---|------|------|--------|
+| C4 | QMD `search_memory()` 只用 embedding_search，未启用混合搜索 | 改用 `hybrid_search`（BM25+embedding RRF 融合） | 🔴 |
+| C5 | brain_inject 缺少 SessionStore 注入 | 新增 `includeSessionStore` 参数，注入未完成任务+最近决策 | 🔴 |
+| B1 | QMD 每次搜索冷启动 Python（2-4s） | Python 常驻 worker 模式（spawn），模型预热后 <100ms 响应 | 🔴 |
+| B3 | LanceDB cleanup 计数不准确 | 增加 beforeCount/afterCount 对比 | 🟡 |
+| C1 | 时间衰减叠加（add）导致分数可能溢出 | 改为乘法（multiply），钳制到 [0,1] | 🟡 |
+| B5 | brain_list 不支持分页 | 新增 page/pageSize/sortBy 参数 | 🟡 |
+| A1 | 缺少记忆库统计工具 | 新增 brain_memory_stats | 🟡 |
+| A5 | 缺少一键健康检查 | 新增 brain_healthcheck | 🟡 |
+
+### 🏗️ 架构改进
+
+- **QMD 持久化 Worker**: `spawn('python3', ['-u', qmdScript, 'worker'])` 常驻进程，stdin JSON → stdout JSON，模型加载一次，后续搜索 <100ms
+- **brain_search 合并去重**: 内容归一化（去空格→trim→前120字符）后 Set 去重，recall 优先、semantic 补充
+- **brain_inject SessionStore 注入**: `getPendingTasks()` + `searchDecisions({limit:5})` 双路补充上下文
+- **SKILL.md 欢迎卡片**: frontmatter 下方工具速查表，Agent 启动即展示
+
+### 🧪 工具数量变化
+
+| 版本 | 核心工具 | 文件锁工具 | 总计 |
+|:---|:---:|:---:|:---:|
+| v1.1.9 | 10 | 5 | 15 |
+| v1.2.0 | **13** (+3) | 5 | **18** |
+
+新增: brain_search, brain_memory_stats, brain_healthcheck
+
+---
+
+## v1.1.9（2026-05-07）— 审计优化版
 
 > **核心主题：把悬在空中的功能真正接进执行链**
 
